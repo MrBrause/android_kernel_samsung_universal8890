@@ -32,6 +32,7 @@
 #include <linux/cred.h>
 #include <linux/ctype.h>
 #include <linux/errno.h>
+#include <linux/file.h>	/* herolte: fget_raw/fput for cgroup_get_from_fd (Phase B2) */
 #include <linux/init_task.h>
 #include <linux/kernel.h>
 #include <linux/list.h>
@@ -226,14 +227,9 @@ static void cgroup_idr_remove(struct idr *idr, int id)
 	spin_unlock_bh(&cgroup_idr_lock);
 }
 
-static struct cgroup *cgroup_parent(struct cgroup *cgrp)
-{
-	struct cgroup_subsys_state *parent_css = cgrp->self.parent;
-
-	if (parent_css)
-		return container_of(parent_css, struct cgroup, self);
-	return NULL;
-}
+/* herolte: cgroup_parent() promoted to a static inline in <linux/cgroup.h>
+ * (Phase B2) so kernel/bpf/cgroup.c can use it as well.
+ */
 
 /**
  * cgroup_css - obtain a cgroup's css for the specified subsystem
@@ -1013,10 +1009,9 @@ static bool cgroup_tryget(struct cgroup *cgrp)
 	return css_tryget(&cgrp->self);
 }
 
-static void cgroup_put(struct cgroup *cgrp)
-{
-	css_put(&cgrp->self);
-}
+/* herolte: cgroup_put() promoted to a static inline in <linux/cgroup.h>
+ * (Phase B2) so kernel/bpf/syscall.c can use it on the attach/detach path.
+ */
 
 /**
  * cgroup_refresh_child_subsys_mask - update child_subsys_mask
@@ -1626,6 +1621,20 @@ static int cgroup_setup_root(struct cgroup_root *root, unsigned int ss_mask)
 	if (ret)
 		goto cancel_ref;
 
+	/*
+	 * herolte eBPF backport (Phase B2): every hierarchy root — the unified
+	 * cgrp_dfl_root AND each legacy v1 controller root (cpuset, memory,
+	 * cpu, …) — is set up here.  Each must have its cgroup_bpf state
+	 * initialised (progs[] list_heads via INIT_LIST_HEAD, effective[]
+	 * arrays), otherwise a child mkdir()'d under a v1 root would walk the
+	 * parent chain in compute_effective_progs() into an uninitialised
+	 * (zeroed) progs list and dereference NULL.  root_cgrp->self.parent is
+	 * NULL for a root, so this only touches the root itself.
+	 */
+	ret = cgroup_bpf_inherit(root_cgrp);
+	if (ret)
+		goto exit_root_id;
+
 	root->kf_root = kernfs_create_root(&cgroup_kf_syscall_ops,
 					   KERNFS_ROOT_CREATE_DEACTIVATED,
 					   root_cgrp);
@@ -1872,6 +1881,52 @@ static void cgroup_kill_sb(struct super_block *sb)
 static struct file_system_type cgroup_fs_type = {
 	.name = "cgroup",
 	.mount = cgroup_mount,
+	.kill_sb = cgroup_kill_sb,
+};
+
+/*
+ * herolte: minimal cgroup2 (unified hierarchy) mount backport.
+ *
+ * Stock 3.18 only exposes the unified hierarchy (cgrp_dfl_root) via
+ * `mount -t cgroup -o __DEVEL__sane_behavior`; it registers no `cgroup2`
+ * filesystem, so Android 14 `mount -t cgroup2` fails ("No such device") and
+ * eBPF cgroup-skb programs have no cgroup2 node to attach to.
+ *
+ * This exposes the SAME existing cgrp_dfl_root under the cgroup2 fs name and
+ * CGROUP2_SUPER_MAGIC. It is purely additive: the stock cgroup v1 path
+ * (cgroup_mount / cgroup_fs_type) is untouched, and cgroup_kill_sb already
+ * special-cases cgrp_dfl_root ("don't kill the default root"), so unmount is
+ * safe. No mount options are accepted (cgroup2 takes none).
+ */
+static struct dentry *cgroup2_mount(struct file_system_type *fs_type,
+				    int flags, const char *unused_dev_name,
+				    void *data)
+{
+	struct dentry *dentry;
+	bool new_sb;
+
+	if (data && *(char *)data)
+		return ERR_PTR(-EINVAL);
+
+	if (!use_task_css_set_links)
+		cgroup_enable_task_cg_lists();
+
+	mutex_lock(&cgroup_mutex);
+	cgrp_dfl_root_visible = true;
+	cgroup_get(&cgrp_dfl_root.cgrp);
+	mutex_unlock(&cgroup_mutex);
+
+	dentry = kernfs_mount(fs_type, flags, cgrp_dfl_root.kf_root,
+			      CGROUP2_SUPER_MAGIC, &new_sb);
+	if (IS_ERR(dentry) || !new_sb)
+		cgroup_put(&cgrp_dfl_root.cgrp);
+
+	return dentry;
+}
+
+static struct file_system_type cgroup2_fs_type = {
+	.name = "cgroup2",
+	.mount = cgroup2_mount,
 	.kill_sb = cgroup_kill_sb,
 };
 
@@ -4332,6 +4387,7 @@ static void css_free_work_fn(struct work_struct *work)
 			css_put(parent);
 	} else {
 		/* cgroup free path */
+		cgroup_bpf_put(cgrp);	/* herolte: release attached eBPF progs (Phase B2) */
 		atomic_dec(&cgrp->root->nr_cgrps);
 		cgroup_pidlist_destroy_all(cgrp);
 		cancel_work_sync(&cgrp->release_agent_work);
@@ -4583,6 +4639,17 @@ static int cgroup_mkdir(struct kernfs_node *parent_kn, const char *name,
 
 	cgrp->self.parent = &parent->self;
 	cgrp->root = root;
+
+	/*
+	 * herolte: set up this cgroup's eBPF state and compute its effective
+	 * programs from the parent chain (Phase B2).  cgrp->self.parent is
+	 * already set above, which is all compute_effective_progs() needs.
+	 * On failure nothing persistent is allocated, so the normal
+	 * out_free_id teardown (idr_remove / ref_exit / kfree) suffices.
+	 */
+	ret = cgroup_bpf_inherit(cgrp);
+	if (ret)
+		goto out_free_id;
 
 	if (notify_on_release(parent))
 		set_bit(CGRP_NOTIFY_ON_RELEASE, &cgrp->flags);
@@ -4937,6 +5004,11 @@ int __init cgroup_init(void)
 	key = css_set_hash(init_css_set.subsys);
 	hash_add(css_set_table, &init_css_set.hlist, key);
 
+	/*
+	 * herolte (Phase B2): cgroup_setup_root() now calls cgroup_bpf_inherit()
+	 * for every root it sets up, including this dfl root, so no separate
+	 * inherit is needed here.
+	 */
 	BUG_ON(cgroup_setup_root(&cgrp_dfl_root, 0));
 
 	mutex_unlock(&cgroup_mutex);
@@ -4989,6 +5061,9 @@ int __init cgroup_init(void)
 		kobject_put(cgroup_kobj);
 		return err;
 	}
+
+	/* herolte: register the cgroup2 fs so A14 `mount -t cgroup2` works. */
+	WARN_ON(register_filesystem(&cgroup2_fs_type));
 
 	proc_create("cgroups", 0, NULL, &proc_cgroupstats_operations);
 	return 0;
@@ -5355,8 +5430,13 @@ struct cgroup_subsys_state *css_tryget_online_from_dir(struct dentry *dentry,
 	struct cgroup_subsys_state *css = NULL;
 	struct cgroup *cgrp;
 
-	/* is @dentry a cgroup dir? */
-	if (dentry->d_sb->s_type != &cgroup_fs_type || !kn ||
+	/* is @dentry a cgroup dir?
+	 * herolte (Phase B2): also accept the unified cgroup2 hierarchy
+	 * (cgroup2_fs_type) added in B1, since netd attaches cgroup-bpf
+	 * programs via an fd on /sys/fs/cgroup, which is mounted cgroup2.
+	 */
+	if ((dentry->d_sb->s_type != &cgroup_fs_type &&
+	     dentry->d_sb->s_type != &cgroup2_fs_type) || !kn ||
 	    kernfs_type(kn) != KERNFS_DIR)
 		return ERR_PTR(-EBADF);
 
@@ -5377,6 +5457,81 @@ struct cgroup_subsys_state *css_tryget_online_from_dir(struct dentry *dentry,
 	rcu_read_unlock();
 	return css;
 }
+
+#ifdef CONFIG_CGROUP_BPF
+/**
+ * cgroup_get_from_fd - get a cgroup pinned by a cgroup2 directory fd
+ * @fd: fd obtained by opening a cgroup2 directory (e.g. /sys/fs/cgroup)
+ *
+ * herolte eBPF backport (Phase B2): resolves the fd netd passes to
+ * BPF_PROG_ATTACH/DETACH into a pinned struct cgroup on the default
+ * (unified) hierarchy.  Returns the cgroup with an elevated reference
+ * (drop with cgroup_put()), or an ERR_PTR on failure.
+ */
+struct cgroup *cgroup_get_from_fd(int fd)
+{
+	struct cgroup_subsys_state *css;
+	struct cgroup *cgrp;
+	struct file *f;
+
+	f = fget_raw(fd);
+	if (!f)
+		return ERR_PTR(-EBADF);
+
+	css = css_tryget_online_from_dir(f->f_path.dentry, NULL);
+	fput(f);
+	if (IS_ERR(css))
+		return ERR_CAST(css);
+
+	cgrp = css->cgroup;
+	if (!cgroup_on_dfl(cgrp)) {
+		cgroup_put(cgrp);
+		return ERR_PTR(-EBADF);
+	}
+
+	return cgrp;
+}
+EXPORT_SYMBOL(cgroup_get_from_fd);
+
+/*
+ * herolte eBPF backport (Phase B2): cgroup_mutex-guarded wrappers around the
+ * __cgroup_bpf_*() cores in kernel/bpf/cgroup.c.  bpf/syscall.c calls these
+ * (BPF_PROG_ATTACH/DETACH/QUERY); they live here because cgroup_mutex is
+ * file-static to the cgroup core.
+ */
+int cgroup_bpf_attach(struct cgroup *cgrp, struct bpf_prog *prog,
+		      enum bpf_attach_type type, u32 flags)
+{
+	int ret;
+
+	mutex_lock(&cgroup_mutex);
+	ret = __cgroup_bpf_attach(cgrp, prog, type, flags);
+	mutex_unlock(&cgroup_mutex);
+	return ret;
+}
+
+int cgroup_bpf_detach(struct cgroup *cgrp, struct bpf_prog *prog,
+		      enum bpf_attach_type type, u32 flags)
+{
+	int ret;
+
+	mutex_lock(&cgroup_mutex);
+	ret = __cgroup_bpf_detach(cgrp, prog, type, flags);
+	mutex_unlock(&cgroup_mutex);
+	return ret;
+}
+
+int cgroup_bpf_query(struct cgroup *cgrp, const union bpf_attr *attr,
+		     union bpf_attr __user *uattr)
+{
+	int ret;
+
+	mutex_lock(&cgroup_mutex);
+	ret = __cgroup_bpf_query(cgrp, attr, uattr);
+	mutex_unlock(&cgroup_mutex);
+	return ret;
+}
+#endif /* CONFIG_CGROUP_BPF */
 
 /**
  * css_from_id - lookup css by id

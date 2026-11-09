@@ -202,4 +202,53 @@ static inline bool static_key_enabled(struct static_key *key)
 	return static_key_count(key) > 0;
 }
 
+/*
+ * herolte eBPF backport (Phase B2): the modern "typed" static-key API
+ * (struct static_key_true/false + static_branch_*), introduced in v4.3,
+ * layered on top of this 3.18 tree's base struct static_key primitives.
+ *
+ * CONFIG_JUMP_LABEL is disabled in the herolte defconfig, so the base
+ * static_key_true()/static_key_false() reduce to plain atomic reads and
+ * static_key_slow_inc()/_dec() to atomic inc/dec; this wrapper is therefore
+ * correct with or without HAVE_JUMP_LABEL.  Each typed key is only ever
+ * tested with the matching primitive (a _false key via static_branch_unlikely
+ * -> static_key_false, a _true key via static_branch_likely -> static_key_true),
+ * which respects the base API's "don't mix true/false on one key" rule.
+ *
+ * Only the pieces the cgroup-bpf accounting path needs are provided:
+ * cgroup_bpf_enabled_key is a DEFINE_STATIC_KEY_FALSE tested with
+ * static_branch_unlikely() and adjusted with static_branch_inc()/_dec().
+ */
+struct static_key_true {
+	struct static_key key;
+};
+
+struct static_key_false {
+	struct static_key key;
+};
+
+/*
+ * Note: the base STATIC_KEY_INIT_TRUE/FALSE in this tree are cast-wrapped
+ * compound literals ((struct static_key){...}); nesting one inside another
+ * initializer is not a constant expression at file scope (GCC: "initializer
+ * element is not constant"), which breaks DEFINE_STATIC_KEY_FALSE at file
+ * scope.  So spell out the plain nested-brace aggregate here instead of
+ * reusing those macros.  CONFIG_JUMP_LABEL is off, so struct static_key is
+ * just { atomic_t enabled; } and .enabled fully initialises it.
+ */
+#define STATIC_KEY_TRUE_INIT  { .key = { .enabled = ATOMIC_INIT(1) } }
+#define STATIC_KEY_FALSE_INIT { .key = { .enabled = ATOMIC_INIT(0) } }
+
+#define DEFINE_STATIC_KEY_TRUE(name)	\
+	struct static_key_true name = STATIC_KEY_TRUE_INIT
+
+#define DEFINE_STATIC_KEY_FALSE(name)	\
+	struct static_key_false name = STATIC_KEY_FALSE_INIT
+
+#define static_branch_likely(x)		likely(static_key_true(&(x)->key))
+#define static_branch_unlikely(x)	unlikely(static_key_false(&(x)->key))
+
+#define static_branch_inc(x)		static_key_slow_inc(&(x)->key)
+#define static_branch_dec(x)		static_key_slow_dec(&(x)->key)
+
 #endif	/* _LINUX_JUMP_LABEL_H */

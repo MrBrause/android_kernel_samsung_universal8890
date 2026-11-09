@@ -43,6 +43,7 @@
 #include <linux/netfilter_ipv6.h>
 
 #include <net/sock.h>
+#include <linux/bpf-cgroup.h>	/* herolte: cgroup-skb egress hook (Phase B2) */
 #include <net/snmp.h>
 
 #include <net/ipv6.h>
@@ -124,6 +125,15 @@ static int ip6_finish_output2(struct sk_buff *skb)
 
 static int ip6_finish_output(struct sk_buff *skb)
 {
+	int ret;
+
+	/* herolte: cgroup-skb egress accounting hook (Phase B2) */
+	ret = BPF_CGROUP_RUN_PROG_INET_EGRESS(skb->sk, skb);
+	if (ret) {
+		kfree_skb(skb);
+		return ret;
+	}
+
 	if ((skb->len > ip6_skb_dst_mtu(skb) && !skb_is_gso(skb)) ||
 	    dst_allfrag(skb_dst(skb)) ||
 	    (IP6CB(skb)->frag_max_size && skb->len > IP6CB(skb)->frag_max_size))

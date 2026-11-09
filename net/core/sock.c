@@ -1022,6 +1022,30 @@ static void cred_to_ucred(struct pid *pid, const struct cred *cred,
 	}
 }
 
+/*
+ * herolte eBPF backport (Phase C): socket cookie generation.
+ *
+ * Backport of the ~4.9 socket-cookie infrastructure, simplified to a single
+ * global monotonic counter instead of a per-net cookie_gen (Android only
+ * needs a unique non-zero u64 per socket, not per-netns uniqueness).  Used by
+ * SO_COOKIE (below) and the bpf_get_socket_cookie() helper so netd's
+ * BpfHandler can tag sockets into cookie_tag_map for per-tag accounting.
+ */
+static atomic64_t cookie_gen = ATOMIC64_INIT(1);
+
+u64 sock_gen_cookie(struct sock *sk)
+{
+	while (1) {
+		u64 res = atomic64_read(&sk->sk_cookie);
+
+		if (res)
+			return res;
+		res = atomic64_inc_return(&cookie_gen);
+		atomic64_cmpxchg(&sk->sk_cookie, 0, res);
+	}
+}
+EXPORT_SYMBOL(sock_gen_cookie);
+
 int sock_getsockopt(struct socket *sock, int level, int optname,
 		    char __user *optval, int __user *optlen)
 {
@@ -1029,6 +1053,7 @@ int sock_getsockopt(struct socket *sock, int level, int optname,
 
 	union {
 		int val;
+		u64 val64;	/* herolte: SO_COOKIE (Phase C) */
 		struct linger ling;
 		struct timeval tm;
 	} v;
@@ -1253,6 +1278,13 @@ int sock_getsockopt(struct socket *sock, int level, int optname,
 
 	case SO_MAX_PACING_RATE:
 		v.val = sk->sk_max_pacing_rate;
+		break;
+
+	case SO_COOKIE:	/* herolte: socket cookie (Phase C) */
+		lv = sizeof(u64);
+		if (len < lv)
+			return -EINVAL;
+		v.val64 = sock_gen_cookie(sk);
 		break;
 
 	default:

@@ -351,6 +351,7 @@ static struct seccomp_filter *seccomp_prepare_filter(struct sock_fprog *fprog)
 	struct sock_filter *fp;
 	int new_len;
 	long ret;
+	int err = 0;	/* herolte: for modern 2-arg bpf_prog_select_runtime() */
 
 	if (fprog->len == 0 || fprog->len > BPF_MAXINSNS)
 		return ERR_PTR(-EINVAL);
@@ -411,7 +412,13 @@ static struct seccomp_filter *seccomp_prepare_filter(struct sock_fprog *fprog)
 	atomic_set(&filter->usage, 1);
 	filter->prog->len = new_len;
 
-	bpf_prog_select_runtime(filter->prog);
+	/* herolte: modern bpf_prog_select_runtime() takes an err ptr and returns
+	 * the (possibly replaced) prog. */
+	filter->prog = bpf_prog_select_runtime(filter->prog, &err);
+	if (err) {
+		ret = err;
+		goto free_filter_prog;
+	}
 
 	return filter;
 

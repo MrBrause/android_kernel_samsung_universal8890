@@ -22,6 +22,8 @@
 #include <linux/seq_file.h>
 #include <linux/kernfs.h>
 #include <linux/wait.h>
+#include <linux/cgroup-defs.h>	/* herolte: struct sock_cgroup_data (Phase B2) */
+#include <linux/bpf-cgroup.h>	/* herolte: struct cgroup_bpf (Phase B2) */
 
 #ifdef CONFIG_CGROUPS
 
@@ -241,6 +243,9 @@ struct cgroup {
 
 	/* used to schedule release agent */
 	struct work_struct release_agent_work;
+
+	/* herolte: used to store eBPF programs (Phase B2) */
+	struct cgroup_bpf bpf;
 };
 
 #define MAX_CGROUP_ROOT_NAMELEN 64
@@ -519,6 +524,50 @@ extern struct css_set init_css_set;
 static inline bool cgroup_on_dfl(const struct cgroup *cgrp)
 {
 	return cgrp->root == &cgrp_dfl_root;
+}
+
+/*
+ * herolte eBPF backport (Phase B2): promoted from a file-static helper in
+ * kernel/cgroup.c so that kernel/bpf/cgroup.c (compute_effective_progs)
+ * can walk the cgroup parent chain too.
+ */
+static inline struct cgroup *cgroup_parent(struct cgroup *cgrp)
+{
+	struct cgroup_subsys_state *parent_css = cgrp->self.parent;
+
+	if (parent_css)
+		return container_of(parent_css, struct cgroup, self);
+	return NULL;
+}
+
+/*
+ * herolte eBPF backport (Phase B2): promoted from a file-static helper in
+ * kernel/cgroup.c so kernel/bpf/syscall.c (BPF_PROG_ATTACH/DETACH) can drop
+ * the reference taken by cgroup_get_from_fd().
+ */
+static inline void cgroup_put(struct cgroup *cgrp)
+{
+	css_put(&cgrp->self);
+}
+
+/* herolte eBPF backport (Phase B2): resolve a cgroup2 dir fd to its cgroup;
+ * defined in kernel/cgroup.c.  netd passes the /sys/fs/cgroup fd here on attach.
+ */
+struct cgroup *cgroup_get_from_fd(int fd);
+
+/*
+ * herolte eBPF backport (Phase B2): resolve a socket's cgroup.
+ *
+ * Mainline decodes a tagged pointer out of sock_cgroup_data.  Because
+ * NET_PRIO/NET_CLASSID are disabled here and every socket is treated as
+ * belonging to the default unified-hierarchy root, this always returns the
+ * root cgroup.  That is where netd attaches the cgroup-skb accounting
+ * programs (/sys/fs/cgroup), so cgrp->bpf.effective[] on the root is what
+ * every ingress/egress packet runs.
+ */
+static inline struct cgroup *sock_cgroup_ptr(struct sock_cgroup_data *skcd)
+{
+	return &cgrp_dfl_root.cgrp;
 }
 
 /* no synchronization, the result can only be used as a hint */

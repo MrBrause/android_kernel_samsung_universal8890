@@ -65,6 +65,14 @@
 
 #define FIELD_SIZEOF(t, f) (sizeof(((t*)0)->f))
 #define DIV_ROUND_UP(n,d) (((n) + (d) - 1) / (d))
+
+/* herolte: backported from upstream (~4.7) for the modern bpf syscall uapi. */
+#define u64_to_user_ptr(x) (		\
+{					\
+	typecheck(u64, (x));		\
+	(void __user *)(uintptr_t)(x);	\
+}					\
+)
 #define DIV_ROUND_UP_ULL(ll,d) \
 	({ unsigned long long _tmp = (ll)+(d)-1; do_div(_tmp, d); _tmp; })
 

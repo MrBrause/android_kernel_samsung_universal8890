@@ -2143,6 +2143,7 @@ void synchronize_net(void);
 int init_dummy_netdev(struct net_device *dev);
 
 DECLARE_PER_CPU(int, xmit_recursion);
+#define XMIT_RECURSION_LIMIT	10	/* herolte: backport for eBPF filter.c */
 static inline int dev_recursion_level(void)
 {
 	return this_cpu_read(xmit_recursion);

@@ -82,6 +82,8 @@
 
 #define SO_BPF_EXTENSIONS	48
 
+#define SO_COOKIE		57	/* herolte: socket cookie (Phase C); upstream value, free here (KNOX uses 55/56/58) */
+
 /* START_OF_KNOX_NPA */
 #define SO_SET_DOMAIN_NAME	55
 #define SO_SET_DNS_UID		56

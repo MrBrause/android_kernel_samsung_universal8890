@@ -132,6 +132,22 @@ static inline unsigned raw_read_seqcount(const seqcount_t *s)
 	return ret;
 }
 
+/*
+ * raw_read_seqcount_latch - read side of the seqcount latch
+ * @s: pointer to seqcount_t
+ *
+ * Backported from upstream for latch-based rbtree (rbtree_latch.h), used by
+ * the modern eBPF core (bpf_prog kallsyms). Stock 8890 already provides
+ * raw_write_seqcount_latch() further down; only the read side was missing.
+ */
+static inline int raw_read_seqcount_latch(seqcount_t *s)
+{
+	int seq = READ_ONCE(s->sequence);
+	/* Pairs with the first smp_wmb() in raw_write_seqcount_latch() */
+	smp_read_barrier_depends();
+	return seq;
+}
+
 /**
  * raw_read_seqcount_begin - start seq-read critical section w/o lockdep
  * @s: pointer to seqcount_t

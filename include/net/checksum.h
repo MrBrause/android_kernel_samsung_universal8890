@@ -136,6 +136,12 @@ static inline void csum_replace2(__sum16 *sum, __be16 old, __be16 new)
 	*sum = ~csum16_add(csum16_sub(~(*sum), old), new);
 }
 
+/* herolte: backported from upstream (~4.x) for the modern eBPF filter.c. */
+static inline void csum_replace_by_diff(__sum16 *sum, __wsum diff)
+{
+	*sum = csum_fold(csum_add(diff, ~csum_unfold(*sum)));
+}
+
 struct sk_buff;
 void inet_proto_csum_replace4(__sum16 *sum, struct sk_buff *skb,
 			      __be32 from, __be32 to, int pseudohdr);

@@ -54,6 +54,7 @@
 #include <linux/kernel.h>
 #include <linux/list.h>
 #include <linux/list_nulls.h>
+#include <linux/cgroup-defs.h>	/* herolte: struct sock_cgroup_data (Phase B2) */
 #include <linux/timer.h>
 #include <linux/cache.h>
 #include <linux/bitops.h>
@@ -447,6 +448,8 @@ struct sock {
 	kuid_t			sk_uid;
 	u32			sk_classid;
 	struct cg_proto		*sk_cgrp;
+	struct sock_cgroup_data	sk_cgrp_data;	/* herolte: cgroup-bpf (Phase B2) */
+	atomic64_t		sk_cookie;	/* herolte: socket cookie (Phase C) */
 	/* START_OF_KNOX_NPA */
 	uid_t			knox_uid;
 	pid_t			knox_pid;
@@ -1653,6 +1656,7 @@ int sock_setsockopt(struct socket *sock, int level, int op,
 
 int sock_getsockopt(struct socket *sock, int level, int op,
 		    char __user *optval, int __user *optlen);
+u64 sock_gen_cookie(struct sock *sk);	/* herolte: socket cookie (Phase C) */
 struct sk_buff *sock_alloc_send_skb(struct sock *sk, unsigned long size,
 				    int noblock, int *errcode);
 struct sk_buff *sock_alloc_send_pskb(struct sock *sk, unsigned long header_len,

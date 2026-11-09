@@ -10,6 +10,7 @@
 
 #include <linux/types.h>
 #include <linux/percpu.h>
+#include <linux/once.h>		/* DO_ONCE() for prandom_init_once() */
 
 u32 prandom_u32(void);
 void prandom_bytes(void *buf, size_t nbytes);

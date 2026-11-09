@@ -69,6 +69,7 @@
 #include <net/xfrm.h>
 #include <linux/skbuff.h>
 #include <net/sock.h>
+#include <linux/bpf-cgroup.h>	/* herolte: cgroup-skb egress hook (Phase B2) */
 #include <net/arp.h>
 #include <net/icmp.h>
 #include <net/checksum.h>
@@ -260,6 +261,15 @@ static int ip_finish_output_gso(struct sk_buff *skb)
 
 static int ip_finish_output(struct sk_buff *skb)
 {
+	int ret;
+
+	/* herolte: cgroup-skb egress accounting hook (Phase B2) */
+	ret = BPF_CGROUP_RUN_PROG_INET_EGRESS(skb->sk, skb);
+	if (ret) {
+		kfree_skb(skb);
+		return ret;
+	}
+
 #if defined(CONFIG_NETFILTER) && defined(CONFIG_XFRM)
 	/* Policy lookup after SNAT yielded a new policy */
 	if (skb_dst(skb)->xfrm != NULL) {

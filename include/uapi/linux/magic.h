@@ -56,6 +56,7 @@
 
 #define SMB_SUPER_MAGIC		0x517B
 #define CGROUP_SUPER_MAGIC	0x27e0eb
+#define CGROUP2_SUPER_MAGIC	0x63677270	/* herolte: cgroup2 fs backport */
 
 
 #define STACK_END_MAGIC		0x57AC6E9D
@@ -76,5 +77,6 @@
 #define MTD_INODE_FS_MAGIC      0x11307854
 #define ANON_INODE_FS_MAGIC	0x09041934
 #define BTRFS_TEST_MAGIC	0x73727279
+#define BPF_FS_MAGIC		0xcafe4a11	/* herolte: backport for bpf inode.c */
 
 #endif /* __LINUX_MAGIC_H__ */

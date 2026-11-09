@@ -3265,5 +3265,44 @@ static inline int yama_task_prctl(int option, unsigned long arg2,
 }
 #endif /* CONFIG_SECURITY_YAMA */
 
+/*
+ * herolte: no-op stubs for the eBPF LSM hooks (upstream ~4.15). This 3.18 tree
+ * has no bpf-LSM, and traffic accounting needs no bpf access-control mediation,
+ * so these allow-by-default stubs satisfy the modern kernel/bpf/syscall.c
+ * callers without pulling in the LSM-multiplexer rewrite. Unconditional (stock
+ * security.h declares none of these, so there is nothing to collide with).
+ */
+struct bpf_map;
+struct bpf_prog;
+struct bpf_prog_aux;
+union bpf_attr;
+
+static inline int security_bpf(int cmd, union bpf_attr *attr, unsigned int size)
+{
+	return 0;
+}
+static inline int security_bpf_map(struct bpf_map *map, fmode_t fmode)
+{
+	return 0;
+}
+static inline int security_bpf_prog(struct bpf_prog *prog)
+{
+	return 0;
+}
+static inline int security_bpf_map_alloc(struct bpf_map *map)
+{
+	return 0;
+}
+static inline void security_bpf_map_free(struct bpf_map *map)
+{
+}
+static inline int security_bpf_prog_alloc(struct bpf_prog_aux *aux)
+{
+	return 0;
+}
+static inline void security_bpf_prog_free(struct bpf_prog_aux *aux)
+{
+}
+
 #endif /* ! __LINUX_SECURITY_H */
 
